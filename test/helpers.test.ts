@@ -46,6 +46,36 @@ describe("asDirective", () => {
 		expect(destroy).toHaveBeenCalledOnce();
 	});
 
+	it("should not throw on unmounted if the action returns no destroy", () => {
+		const el = document.createElement("div");
+		for (const result of [undefined, null, {}]) {
+			const directive = asDirective(() => result);
+			directive.mounted(el, { value: "test" });
+			expect(() => directive.unmounted(el)).not.toThrow();
+		}
+	});
+
+	it("should keep action results per element", () => {
+		const destroys = new Map<HTMLElement, () => void>();
+		const directive = asDirective(el => {
+			const destroy = vi.fn();
+			destroys.set(el, destroy);
+			return { destroy };
+		});
+
+		const a = document.createElement("div");
+		const b = document.createElement("div");
+		directive.mounted(a);
+		directive.mounted(b);
+
+		directive.unmounted(a);
+		expect(destroys.get(a)).toHaveBeenCalledOnce();
+		expect(destroys.get(b)).not.toHaveBeenCalled();
+
+		directive.unmounted(b);
+		expect(destroys.get(b)).toHaveBeenCalledOnce();
+	});
+
 	it("should not throw on unmounted if not mounted", () => {
 		const original = vi.fn(() => ({ destroy: vi.fn() }));
 		const directive = asDirective(original);
@@ -169,6 +199,60 @@ describe("subscribeLater", () => {
 		getter();
 
 		expect(store.subscribe).toHaveBeenCalledOnce();
+	});
+
+	it("should resubscribe when storeLocator returns another store", () => {
+		const callbacks: ((v: string) => void)[] = [];
+		const makeStore = (initial: string) => {
+			const unsub = vi.fn();
+			const store = {
+				subscribe: vi.fn(cb => {
+					callbacks.push(cb);
+					cb(initial);
+					return unsub;
+				}),
+			};
+			return { store, unsub };
+		};
+		const a = makeStore("a");
+		const b = makeStore("b");
+
+		let active = a.store;
+		const getter = subscribeLater(() => active);
+
+		expect(getter().value).toBe("a");
+
+		active = b.store;
+		expect(getter().value).toBe("b");
+		expect(a.unsub).toHaveBeenCalledOnce();
+		expect(b.store.subscribe).toHaveBeenCalledOnce();
+
+		// the new store now drives the ref
+		callbacks[1]("b2");
+		expect(getter().value).toBe("b2");
+		expect(b.unsub).not.toHaveBeenCalled();
+	});
+
+	it("should drop the subscription and reset the ref when the store disappears", () => {
+		const unsub = vi.fn();
+		const store = {
+			subscribe: vi.fn(cb => {
+				cb(1);
+				return unsub;
+			}),
+		};
+
+		let available = true;
+		const getter = subscribeLater(() => (available ? store : null));
+		expect(getter().value).toBe(1);
+
+		available = false;
+		expect(getter().value).toBeUndefined();
+		expect(unsub).toHaveBeenCalledOnce();
+
+		available = true;
+		expect(getter().value).toBe(1);
+		expect(store.subscribe).toHaveBeenCalledTimes(2);
 	});
 
 	it("should register cleanup with onUnmounted that calls unsub", () => {

@@ -1,7 +1,7 @@
 import { shallowRef, triggerRef, onUnmounted, type ShallowRef } from "vue";
 
 type SvelteDirectiveResult = {
-	destroy: () => void | undefined;
+	destroy?: () => void;
 };
 
 type VueDirectiveBinding<T> = {
@@ -11,10 +11,10 @@ type VueDirectiveBinding<T> = {
 type SvelteDirective<T> = (
 	el: HTMLElement,
 	binding?: T
-) => SvelteDirectiveResult;
+) => SvelteDirectiveResult | void | null | undefined;
 type VueDirective<T> = {
 	mounted(el: HTMLElement, binding?: VueDirectiveBinding<T>): void;
-	unmounted(_el: HTMLElement): void;
+	unmounted(el: HTMLElement): void;
 };
 
 type Readable<T> = {
@@ -22,16 +22,15 @@ type Readable<T> = {
 };
 
 export function asDirective<T>(original: SvelteDirective<T>): VueDirective<T> {
-	let remove: SvelteDirectiveResult;
+	const results = new WeakMap<HTMLElement, SvelteDirectiveResult>();
 	return {
 		mounted(el: HTMLElement, binding?: VueDirectiveBinding<T>) {
-			remove = original(el, binding?.value);
+			const result = original(el, binding?.value);
+			if (result) results.set(el, result);
 		},
-		unmounted(_el: HTMLElement) {
-			if (remove) {
-				remove.destroy();
-				remove = undefined;
-			}
+		unmounted(el: HTMLElement) {
+			results.get(el)?.destroy?.();
+			results.delete(el);
 		},
 	};
 }
@@ -54,20 +53,24 @@ export function subscribeLater<T>(
 	forceUpdate?: boolean
 ): () => ShallowRef<T | undefined> {
 	let realUnsub: (() => void) | undefined;
-	let done = false;
+	let current: Readable<T> | undefined | null;
 	const value = shallowRef<T>();
 	const unsub = () => realUnsub?.();
 	onUnmounted(unsub);
 
 	return () => {
-		if (!done) {
-			const store = storeLocator();
+		const store = storeLocator();
+		if (store !== current) {
+			unsub();
+			realUnsub = undefined;
+			current = store;
 			if (store) {
 				realUnsub = store.subscribe(v => {
 					value.value = v;
 					if (forceUpdate) triggerRef(value);
 				});
-				done = true;
+			} else {
+				value.value = undefined;
 			}
 		}
 		return value;
